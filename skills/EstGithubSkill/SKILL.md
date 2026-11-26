@@ -1,11 +1,11 @@
 ---
 name: est-github-skill
-description: 使用已验证的优先级访问 GitHub，适用于 GitHub 仓库克隆、远程分支检查、普通推送及推送后验证，尤其适用于本机原生 Git HTTPS 连接失败时。
+description: 访问 GitHub：克隆、检查远端分支、推送并核验原提交，或在本地 Git 无法打包时通过网页发布文件到新分支。
 ---
 
 # EstGithubSkill
 
-先确认仓库、目标路径或目标分支。Windows 上优先使用本技能自带的 Dulwich + Paramiko 脚本。克隆可直接执行，推送须完成下方逐次确认。
+先确认仓库、目标路径或目标分支。Windows 上克隆、查询远端和推送已有提交时，优先使用本技能自带的 Dulwich + Paramiko 脚本。克隆可直接执行；推送或改走网页发布时，按对应流程先确认。
 
 ## 本机工具优先表
 
@@ -15,6 +15,8 @@ description: 使用已验证的优先级访问 GitHub，适用于 GitHub 仓库�
 | 2 | 原生 Git + OpenSSH | 本机已有 GitHub SSH 443 配置，原生客户端路径待验证 | Python 依赖不可用时才尝试，先用 `git ls-remote` |
 | 3 | Python HTTPS | 访问测试仓库时返回 HTTP 401 | 有已授权的 HTTPS 凭据时尝试 |
 | 4 | 原生 Git HTTPS / GitHub 代理 | 原生直连连接失败，代理隧道返回 405 | 网络或代理配置变化后再测 |
+
+若 Python 能查询或拉取远端，但 Dulwich 在本地打包时失败（例如 `Not a known type 7`），先按本地对象读取问题排查。切换 SSH 或 HTTPS 不能修复本地打包；远端可读也不代表可推送。必须保留原提交 SHA 时，停止发布并处理本地对象问题；若只需发布明确可上传的文件，走[网页发布](#网页发布)。
 
 SSH 握手短暂中断时，同一路径最多重试两次。认证失败检查当前 SSH 身份，仓库访问被拒检查仓库权限。主机指纹不匹配时停止，查阅 [GitHub 官方指纹](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)。推送结果不确定时先验证远程 SHA，再决定是否需要继续。凭据只在本机使用，输出中避免记录密钥、令牌和认证头。
 
@@ -98,3 +100,17 @@ python $estScript --key $estKey --repo $estRepo verify --branch main
 # 用户确认之后执行
 python $estScript --key $estKey --repo $estRepo push --worktree 'E:\Github\REPO' --branch main --confirm-sha '<完整的已确认 SHA>'
 ```
+
+## 网页发布
+
+此流程将文件提交到 GitHub 上的新分支，**会生成新提交 SHA，不会上传已有本地提交或保留其历史**。发布前列出目标仓库和可见性、基准分支及 SHA、拟创建的分支、要发布的文件及其差异；说明 SHA 会变化，等待用户确认。只提交已确认可上传的文件，不附带其他工作区内容。
+
+1. 在 GitHub 登录有仓库写权限的账号，切到已确认的基准分支（通常是 `main`）。先核对基准 SHA 和目标分支是否已存在；基准 SHA 有变化、目标分支已存在或权限不足时，停止并重新确认。
+2. 新增文件时，从仓库根目录选择 **Add file → Create new file**，填写仓库相对路径；更新文件时，打开目标文件并选择 **Edit this file**。输入已确认的内容并检查差异。
+3. 选择 **Commit changes… → Create a new branch for this commit**，使用已确认的分支名，不直接提交到基准分支。完成后打开新分支，核对父提交、文件差异和新提交 SHA。需要创建 PR 时另行确认。
+
+[GitHub 官方：创建文件](https://docs.github.com/en/repositories/working-with-files/managing-files/creating-new-files)
+
+### REST API 备选
+
+需要自动化且已有授权凭据时，按同一发布确认流程执行。细粒度令牌需要目标仓库的 `Contents: write` 权限；从本地安全配置读取凭据，不在对话或日志中展示。先用 [Git references API](https://docs.github.com/en/rest/git/refs#create-a-reference) 从确认的基准 SHA 创建目标分支，再用 [Contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents) 提交文件，明确指定 `branch`；更新文件时同时提供该分支上的现有文件 blob SHA。写入后读取远端分支和文件差异，核对新提交 SHA。公开 API 可达不代表具备写入权限。
