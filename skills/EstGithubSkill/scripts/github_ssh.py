@@ -6,12 +6,19 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import re
 from pathlib import Path
 
 try:
+    import dulwich as git
     import paramiko
-    from dulwich.client import SSHGitClient, SSHVendor
-    from dulwich.repo import Repo
+
+    # Load the submodules used through the git package alias.
+    import dulwich.client
+    import dulwich.graph
+    import dulwich.objects
+    import dulwich.refs
+    import dulwich.repo
 except ImportError as exc:
     raise SystemExit(
         "Missing dependency. Install dulwich and paramiko into an isolated directory "
@@ -62,7 +69,9 @@ class ParamikoConnection:
         self.client.close()
 
 
-class ParamikoVendor(SSHVendor):
+class ParamikoVendor(git.client.SSHVendor):
+    """Provide the Git library with SSH connections opened by Paramiko."""
+
     def __init__(self, key_path: Path):
         self.key_path = key_path
 
@@ -99,11 +108,6 @@ class ParamikoVendor(SSHVendor):
         return ParamikoConnection(client, channel)
 
 
-import re
-from dulwich.graph import can_fast_forward
-from dulwich.objects import Commit
-from dulwich.refs import check_ref_format
-
 ORIGIN = "git@github.com:"
 
 
@@ -115,7 +119,7 @@ def repository(value):
 
 def branch_ref(value):
     ref = f"refs/heads/{value}".encode()
-    if not value or not check_ref_format(ref):
+    if not value or not git.refs.check_ref_format(ref):
         raise argparse.ArgumentTypeError("invalid branch")
     return ref
 
@@ -150,7 +154,7 @@ def clone(client, remote, args):
             print("CLONE", target, repo.head().decode())
         return
     target.mkdir()
-    with Repo.init(target) as repo:
+    with git.repo.Repo.init(target) as repo:
         repo.refs.set_symbolic_ref(b"HEAD", refs.symrefs.get(b"HEAD", b"refs/heads/main"))
         config = repo.get_config()
         config.set((b"remote", b"origin"), b"url", origin.encode())
@@ -161,7 +165,7 @@ def clone(client, remote, args):
 
 def push(client, remote, args):
     branch = args.branch
-    with Repo(str(args.worktree.resolve())) as repo:
+    with git.repo.Repo(str(args.worktree.resolve())) as repo:
         config = repo.get_config_stack()
         section = (b"remote", b"origin")
         urls = list(config.get_multivar(section, b"pushurl")) or list(config.get_multivar(section, b"url"))
@@ -173,13 +177,13 @@ def push(client, remote, args):
         if len(urls) != 1 or urls[0].decode().casefold() not in {url.casefold() for url in accepted}:
             raise SystemExit("origin push URL does not match the approved GitHub repository")
         approved = args.confirm_sha.lower().encode("ascii")
-        if repo.refs[branch] != approved or not isinstance(repo[approved], Commit):
+        if repo.refs[branch] != approved or not isinstance(repo[approved], git.objects.Commit):
             raise SystemExit("Local branch no longer points to the approved commit")
 
         def update_refs(remote_refs):
             previous = remote_refs.get(branch)
             if previous is not None and previous != approved:
-                if previous not in repo or not can_fast_forward(repo, previous, approved):
+                if previous not in repo or not git.graph.can_fast_forward(repo, previous, approved):
                     raise SystemExit("Cannot verify fast-forward. Fetch and review before retrying.")
             return {branch: approved}
 
@@ -210,7 +214,9 @@ def main():
     key = args.key.expanduser().resolve()
     if not key.is_file():
         parser.error("SSH private key file is unavailable")
-    client = SSHGitClient(GITHUB_HOST, port=GITHUB_PORT, username="git", vendor=ParamikoVendor(key))
+    client = git.client.SSHGitClient(
+        GITHUB_HOST, port=GITHUB_PORT, username="git", vendor=ParamikoVendor(key)
+    )
     remote = args.repo + ".git"
     if args.command in ("probe", "verify"):
         describe(client.get_refs(remote), getattr(args, "branch", None))
